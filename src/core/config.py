@@ -2,14 +2,24 @@
 Lab 11 — Configuration & API Key Setup
 """
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 
 def setup_api_key():
-    """Load Google API key from environment or prompt."""
+    """Load a local API key when present without blocking offline policy work."""
+    repo_env = Path(__file__).resolve().parents[2] / ".env"
+    load_dotenv(repo_env)
     if "GOOGLE_API_KEY" not in os.environ:
-        os.environ["GOOGLE_API_KEY"] = input("Enter Google API Key: ")
+        print(
+            "GOOGLE_API_KEY not configured — offline policy tests can run, "
+            "but live Gemini agent parts will be skipped or report errors."
+        )
+        return False
     os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "0"
     print("API key loaded.")
+    return True
 
 
 # Allowed banking topics (used by topic_filter)

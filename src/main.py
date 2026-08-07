@@ -13,6 +13,13 @@ import sys
 import asyncio
 import argparse
 
+# Windows terminals may default to cp1252, while the lab output contains
+# Vietnamese text and arrows. Reconfigure streams so documented commands work.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 from core.config import setup_api_key
 
 
@@ -28,7 +35,13 @@ async def part1_attacks():
 
     # --- Unsafe (required for hạng mục B) ---
     unsafe_agent, unsafe_runner = create_unsafe_agent()
-    await test_agent(unsafe_agent, unsafe_runner)
+    try:
+        await test_agent(unsafe_agent, unsafe_runner)
+    except Exception as exc:
+        print(
+            "Unsafe-agent sanity check could not call the live model: "
+            f"{type(exc).__name__}: {exc}"
+        )
 
     print("\n--- Attacks on UNSAFE agent (hạng mục B) ---")
     unsafe_results = await run_attacks(

@@ -15,6 +15,7 @@ from google.adk.agents import llm_agent
 from google.adk import runners
 from google.adk.plugins import base_plugin
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
 from agents.security_boundary import (
@@ -175,6 +176,7 @@ class GuardsInputPlugin(base_plugin.BasePlugin):
         super().__init__(name="guards_input")
         self.blocked_count = 0
         self.total_count = 0
+        self._blocked_responses: dict[str, types.Content] = {}
 
     def _text(self, content: types.Content) -> str:
         if not content or not content.parts:
@@ -191,15 +193,36 @@ class GuardsInputPlugin(base_plugin.BasePlugin):
         text = self._text(user_message)
         if detect_injection_strong(text):
             self.blocked_count += 1
-            return self._block(
+            response = self._block(
                 "I cannot process that request. I only help with VinBank banking questions."
             )
+            invocation_id = getattr(invocation_context, "invocation_id", None)
+            if invocation_id:
+                self._blocked_responses[invocation_id] = response
+            return response
         if topic_filter_strong(text):
             self.blocked_count += 1
-            return self._block(
+            response = self._block(
                 "I'm a VinBank assistant and can only help with banking-related questions."
             )
+            invocation_id = getattr(invocation_context, "invocation_id", None)
+            if invocation_id:
+                self._blocked_responses[invocation_id] = response
+            return response
         return None
+
+    async def before_model_callback(
+        self,
+        *,
+        callback_context,
+        llm_request,
+    ) -> LlmResponse | None:
+        """Use ADK's model callback as the fail-closed input boundary."""
+        invocation_id = getattr(callback_context, "invocation_id", None)
+        response = self._blocked_responses.pop(invocation_id, None)
+        if response is None:
+            return None
+        return LlmResponse(content=response)
 
 
 class GuardsOutputPlugin(base_plugin.BasePlugin):
@@ -241,7 +264,7 @@ def create_guards_agent():
     """Create VinBank agent with strong input + output guardrails (bonus target)."""
     plugins = [GuardsInputPlugin(), GuardsOutputPlugin()]
     agent = llm_agent.LlmAgent(
-        model="gemini-3.1-flash-lite",
+        model="gemini-3.5-flash-lite",
         name="guards_assistant",
         instruction=GUARDS_INSTRUCTION,
     )

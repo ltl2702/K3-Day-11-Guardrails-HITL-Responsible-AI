@@ -5,12 +5,37 @@ Lab 11 — Part 2A: Input Guardrails
   TODO 3: Input Guardrail Plugin (ADK)
 """
 import re
+import unicodedata
 
 from google.genai import types
 from google.adk.plugins import base_plugin
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.models.llm_response import LlmResponse
 
 from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
+
+
+ZERO_WIDTH_CHARACTERS = "\u200b\u200c\u200d\ufeff\u2060"
+
+
+def normalize_for_detection(text: str) -> str:
+    """Return a canonical form suitable for deterministic policy checks.
+
+    NFKC folds compatibility characters, invisible separators are removed, and
+    casefold handles mixed-case attacks more reliably than a plain lower().
+    """
+    normalized = unicodedata.normalize("NFKC", text or "")
+    normalized = normalized.translate(
+        str.maketrans("", "", ZERO_WIDTH_CHARACTERS)
+    )
+    normalized = normalized.casefold()
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _strip_accents(text: str) -> str:
+    """Make Vietnamese topic matching work with both accented/unaccented text."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
 
 
 # ============================================================
@@ -41,14 +66,25 @@ def detect_injection(user_input: str) -> bool:
     Returns:
         True if injection detected, False otherwise
     """
-    INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
+    injection_patterns = [
+        r"ignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions?",
+        r"disregard\s+(?:all\s+)?(?:previous|above|prior)\s+(?:instructions?|rules?|directives?)",
+        r"forget\s+(?:your\s+)?(?:instructions?|rules?|prompt)",
+        r"you\s+are\s+now\b",
+        r"(?:system|developer)\s+(?:prompt|instructions?)",
+        r"reveal\s+(?:your\s+)?(?:instructions?|prompt|secrets?|password|api\s*key)",
+        r"pretend\s+(?:you\s+are|to\s+be)",
+        r"act\s+as\s+(?:a\s+|an\s+)?(?:unrestricted|jailbroken|evil)",
+        r"override\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions?)",
+        r"bỏ\s+qua\s+(?:mọi\s+)?hướng\s+dẫn",
+        r"quên\s+(?:mọi\s+)?hướng\s+dẫn",
+        r"tiết\s+lộ\s+(?:mật\s+khẩu|api|thông\s+tin\s+nội\s+bộ)",
+        r"cho\s+tôi\s+(?:xem\s+)?(?:mật\s+khẩu|system\s+prompt|api\s*key)",
     ]
 
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+    normalized = normalize_for_detection(user_input)
+    for pattern in injection_patterns:
+        if re.search(pattern, normalized, re.IGNORECASE):
             return True
     return False
 
@@ -72,14 +108,15 @@ def topic_filter(user_input: str) -> bool:
     Returns:
         True if input should be BLOCKED (off-topic or blocked topic)
     """
-    input_lower = user_input.lower()
+    searchable = _strip_accents(normalize_for_detection(user_input))
+    blocked_topics = [_strip_accents(topic.casefold()) for topic in BLOCKED_TOPICS]
+    allowed_topics = [_strip_accents(topic.casefold()) for topic in ALLOWED_TOPICS]
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return True
-    # 2. If input doesn't contain any allowed topic -> return True
-    # 3. Otherwise -> return False (allow)
-
-    pass  # Replace with your implementation
+    if any(topic in searchable for topic in blocked_topics):
+        return True
+    if not any(topic in searchable for topic in allowed_topics):
+        return True
+    return False
 
 
 # ============================================================
@@ -100,6 +137,7 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         super().__init__(name="input_guardrail")
         self.blocked_count = 0
         self.total_count = 0
+        self._blocked_responses: dict[str, types.Content] = {}
 
     def _extract_text(self, content: types.Content) -> str:
         """Extract plain text from a Content object."""
@@ -132,14 +170,46 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 3. If both are False: return None (let message through)
+        if detect_injection(text):
+            self.blocked_count += 1
+            response = self._block_response(
+                "I cannot process that request. "
+                "I only help with VinBank banking questions."
+            )
+            invocation_id = getattr(invocation_context, "invocation_id", None)
+            if invocation_id:
+                self._blocked_responses[invocation_id] = response
+            return response
 
-        pass  # Replace with your implementation
+        if topic_filter(text):
+            self.blocked_count += 1
+            response = self._block_response(
+                "I'm a VinBank assistant and can only help "
+                "with banking-related questions."
+            )
+            invocation_id = getattr(invocation_context, "invocation_id", None)
+            if invocation_id:
+                self._blocked_responses[invocation_id] = response
+            return response
+
+        return None
+
+    async def before_model_callback(
+        self,
+        *,
+        callback_context,
+        llm_request,
+    ) -> LlmResponse | None:
+        """Short-circuit the LLM on current ADK versions.
+
+        ADK 2.x treats on_user_message_callback's return value as a replacement
+        message. Returning an LlmResponse here is the actual model-call gate.
+        """
+        invocation_id = getattr(callback_context, "invocation_id", None)
+        response = self._blocked_responses.pop(invocation_id, None)
+        if response is None:
+            return None
+        return LlmResponse(content=response)
 
 
 # ============================================================

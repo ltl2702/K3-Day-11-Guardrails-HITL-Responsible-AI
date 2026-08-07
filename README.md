@@ -1,6 +1,13 @@
-# Day 11 — Controlled Agent Security (2026)
+﻿# Day 11 — Controlled Agent Security (2026)
 
 Làm sao để ứng dụng agent an toàn hơn?
+
+**Sinh viên:** Lương Thị Linh  
+**MSSV:** `2A202601015`
+
+Implementation sử dụng Google ADK kết hợp policy Python xác định cho input,
+output, egress, HITL, audit và monitoring. Bộ policy/self-check chạy được mà
+không cần API key; API key chỉ cần cho unsafe-agent, LLM judge và AI red team.
 
 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).
 
@@ -23,6 +30,14 @@ Copy-Item .env.example .env
 python -m pip install -U pip
 pip install -r requirements.txt
 ```
+
+Nếu máy thiếu dung lượng cho NeMo/ONNX, có thể cài bộ bắt buộc trước:
+
+```powershell
+pip install google-genai google-adk pytest jsonschema python-dotenv
+```
+
+NeMo Guardrails là TODO tùy chọn; các checkpoint bắt buộc không phụ thuộc NeMo.
 
 Mỗi lần mở terminal mới: `.\.venv\Scripts\Activate.ps1` rồi mới chạy code.
 
@@ -139,6 +154,15 @@ pytest tests/public -q
 python scripts/grade.py --submission-dir . --out outputs/grade_report.json
 ```
 
+Chạy riêng suite offline và ghi đúng MSSV:
+
+```powershell
+$env:STUDENT_ID="2A202601015"
+cd src
+python main.py --part 5
+cd ..
+```
+
 Viết `report/<MSSV>_report.md`.
 
 ### Phần B — Red team và bonus
@@ -153,6 +177,10 @@ python main.py --part 1
 
 3. Unsafe = attack target để phân tích. Guards (`src/agents/guards_agent.py`) = **bonus chỉ khi verifier replay xác nhận leak**.
 4. Lưu `outputs/attack_results.json` làm evidence; không tự cấp runtime score hoặc bonus.
+
+`run_attacks()` luôn gọi target được truyền vào và lưu response thực. Nếu chưa có
+`GOOGLE_API_KEY`, Guards Agent vẫn có thể chặn ở deterministic input gate, nhưng
+unsafe-agent và TODO 14 cần được chạy lại sau khi cấu hình key trong `.env`.
 
 Colab / Jupyter (tuỳ chọn): `notebooks/lab11_guardrails_hitl.ipynb`. Local là đủ.
 
@@ -189,3 +217,4 @@ Nộp theo [`SUBMISSION.md`](SUBMISSION.md).
 - [NeMo Guardrails](https://github.com/NVIDIA/NeMo-Guardrails)
 - [Google ADK](https://google.github.io/adk-docs/)
 - [AI Safety Fundamentals](https://aisafetyfundamentals.com/)
+

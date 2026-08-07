@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 HIGH_RISK_ACTIONS = [
     "transfer_money",
+    "change_beneficiary",
     "close_account",
     "change_password",
     "delete_data",
@@ -65,32 +66,43 @@ class ConfidenceRouter:
         Returns:
             RoutingDecision with routing action and metadata
         """
-        # TODO 11: Implement routing logic
-        #
-        # 1. Check if action_type is in HIGH_RISK_ACTIONS
-        #    -> If yes: always escalate (action="escalate", priority="high",
-        #       requires_human=True, reason="High-risk action: {action_type}")
-        #
-        # 2. Check confidence thresholds:
-        #    - confidence >= 0.9:
-        #      action="auto_send", priority="low",
-        #      requires_human=False, reason="High confidence"
-        #
-        #    - 0.7 <= confidence < 0.9:
-        #      action="queue_review", priority="normal",
-        #      requires_human=True, reason="Medium confidence — needs review"
-        #
-        #    - confidence < 0.7:
-        #      action="escalate", priority="high",
-        #      requires_human=True, reason="Low confidence — escalating"
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence must be between 0.0 and 1.0")
+
+        if action_type in HIGH_RISK_ACTIONS:
+            return RoutingDecision(
+                action="escalate",
+                confidence=confidence,
+                reason=f"High-risk action: {action_type}",
+                priority="high",
+                requires_human=True,
+            )
+
+        if confidence >= self.HIGH_THRESHOLD:
+            return RoutingDecision(
+                action="auto_send",
+                confidence=confidence,
+                reason="High confidence",
+                priority="low",
+                requires_human=False,
+            )
+
+        if confidence >= self.MEDIUM_THRESHOLD:
+            return RoutingDecision(
+                action="queue_review",
+                confidence=confidence,
+                reason="Medium confidence — needs review",
+                priority="normal",
+                requires_human=True,
+            )
 
         return RoutingDecision(
-            action="auto_send",
+            action="escalate",
             confidence=confidence,
-            reason="TODO: implement routing logic",
-            priority="low",
-            requires_human=False,
-        )  # TODO: Replace with implementation
+            reason="Low confidence — escalating",
+            priority="high",
+            requires_human=True,
+        )
 
 
 # ============================================================
@@ -111,33 +123,78 @@ class ConfidenceRouter:
 hitl_decision_points = [
     {
         "id": 1,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
-        "approval_path": "TODO: Explain approve, reject and timeout behavior",
-        "audit_fields": "TODO: List correlation ID, intent, diff and reviewer decision",
+        "name": "Transfer or beneficiary change approval",
+        "trigger": (
+            "A transfer_money or change_beneficiary action is proposed, "
+            "regardless of model confidence."
+        ),
+        "hitl_model": "human-in-the-loop",
+        "context_needed": (
+            "Old and new beneficiary, amount, currency, source account, "
+            "device/IP, recent account activity and anomaly indicators."
+        ),
+        "example": (
+            "The agent proposes changing the beneficiary and transferring "
+            "50,000,000 VND from a newly observed device."
+        ),
+        "approval_path": (
+            "Approve records reviewer identity and releases the exact proposal; "
+            "reject cancels it; timeout places it on hold and never transfers funds."
+        ),
+        "audit_fields": (
+            "request_id, layer=hitl, intent, old_value, new_value, amount, "
+            "risk_signals, reviewer_id, reviewer_decision, decision_timestamp"
+        ),
     },
     {
         "id": 2,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
-        "approval_path": "TODO: Explain approve, reject and timeout behavior",
-        "audit_fields": "TODO: List correlation ID, intent, diff and reviewer decision",
+        "name": "Account closure approval",
+        "trigger": (
+            "The agent proposes close_account or delete_data, including when "
+            "the customer message claims urgency or executive authority."
+        ),
+        "hitl_model": "human-in-the-loop",
+        "context_needed": (
+            "Verified customer identity, account status, remaining balance, "
+            "pending payments, linked products and the proposed closure scope."
+        ),
+        "example": (
+            "A message asks to close an account immediately while a loan "
+            "repayment and two card settlements remain pending."
+        ),
+        "approval_path": (
+            "Approve schedules closure after prerequisites; reject keeps the "
+            "account open; timeout rejects the action and alerts operations."
+        ),
+        "audit_fields": (
+            "request_id, layer=hitl, intent, account_state, dependencies, "
+            "proposed_action, reviewer_id, reviewer_decision, timeout_status"
+        ),
     },
     {
         "id": 3,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
-        "approval_path": "TODO: Explain approve, reject and timeout behavior",
-        "audit_fields": "TODO: List correlation ID, intent, diff and reviewer decision",
+        "name": "Credential or personal-data update",
+        "trigger": (
+            "A change_password or update_personal_info action is proposed, "
+            "or identity/risk signals disagree."
+        ),
+        "hitl_model": "human-as-tiebreaker",
+        "context_needed": (
+            "Authentication factors, old/new field diff, device history, "
+            "fraud score and any recent recovery attempts."
+        ),
+        "example": (
+            "A request from a new device changes both the phone number and "
+            "password after failed authentication attempts."
+        ),
+        "approval_path": (
+            "Approve applies only the displayed diff; reject preserves old "
+            "values; timeout holds the request and sends a fraud-review alert."
+        ),
+        "audit_fields": (
+            "request_id, layer=hitl, intent, masked_old_value, masked_new_value, "
+            "risk_score, reviewer_id, reviewer_decision, decision_timestamp"
+        ),
     },
 ]
 

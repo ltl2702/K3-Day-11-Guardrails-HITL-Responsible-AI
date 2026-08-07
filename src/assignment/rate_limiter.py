@@ -10,6 +10,7 @@ from collections import defaultdict, deque
 import time
 
 from google.adk.plugins import base_plugin
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
 
@@ -23,6 +24,7 @@ class RateLimitPlugin(base_plugin.BasePlugin):
         self.user_windows: dict[str, deque] = defaultdict(deque)
         self.blocked_count = 0
         self.total_count = 0
+        self._blocked_responses: dict[str, types.Content] = {}
 
     def _block_response(self, message: str) -> types.Content:
         return types.Content(
@@ -37,13 +39,33 @@ class RateLimitPlugin(base_plugin.BasePlugin):
         now = time.time()
         window = self.user_windows[user_id]
 
-        # TODO: Implement sliding window:
-        # 1. Pop timestamps older than (now - window_seconds) from the left
-        # 2. If len(window) >= max_requests:
-        #       wait = window_seconds - (now - window[0])
-        #       self.blocked_count += 1
-        #       return self._block_response(
-        #           f"Rate limit exceeded. Try again in {wait:.0f}s."
-        #       )
-        # 3. Else: append now, return None
-        raise NotImplementedError("Implement RateLimitPlugin.on_user_message_callback")
+        cutoff = now - self.window_seconds
+        while window and window[0] <= cutoff:
+            window.popleft()
+
+        if len(window) >= self.max_requests:
+            wait = max(0.0, self.window_seconds - (now - window[0]))
+            self.blocked_count += 1
+            response = self._block_response(
+                f"Rate limit exceeded. Try again in {wait:.0f}s."
+            )
+            invocation_id = getattr(invocation_context, "invocation_id", None)
+            if invocation_id:
+                self._blocked_responses[invocation_id] = response
+            return response
+
+        window.append(now)
+        return None
+
+    async def before_model_callback(
+        self,
+        *,
+        callback_context,
+        llm_request,
+    ) -> LlmResponse | None:
+        """Prevent a rate-limited request from reaching the model in ADK 2.x."""
+        invocation_id = getattr(callback_context, "invocation_id", None)
+        response = self._blocked_responses.pop(invocation_id, None)
+        if response is None:
+            return None
+        return LlmResponse(content=response)
